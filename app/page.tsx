@@ -5,15 +5,21 @@ import {
   BadgeCheck,
   Brain,
   Combine,
+  Edit3,
   FileArchive,
+  FileImage,
   FileText,
+  Hash,
   Highlighter,
   Image,
   Layers,
   PenLine,
+  RotateCw,
   Scissors,
   ShieldCheck,
   Sparkles,
+  Stamp,
+  Trash2,
   Wand2,
   Zap,
 } from "lucide-react";
@@ -21,14 +27,68 @@ import {
 const liveTools = [
   {
     title: "PDF Editor",
-    description: "Edit, add text, insert images, highlight, sign, and export PDFs.",
+    description: "Add text, images, highlights, signatures and export your edits.",
     href: "/editor",
-    icon: FileText,
+    icon: Edit3,
   },
   {
-    title: "Sign PDF",
-    description: "Add typed signatures or signature images to your documents.",
-    href: "/editor",
+    title: "Merge PDF",
+    description: "Combine multiple PDF files into one document in seconds.",
+    href: "/tools/merge",
+    icon: Combine,
+  },
+  {
+    title: "Split PDF",
+    description: "Extract pages or split a PDF into separate files by range.",
+    href: "/tools/split",
+    icon: Scissors,
+  },
+  {
+    title: "Compress PDF",
+    description: "Reduce PDF file size with browser-side optimisation.",
+    href: "/tools/compress",
+    icon: FileArchive,
+  },
+  {
+    title: "Rotate PDF",
+    description: "Rotate all or selected pages by 90°, 180°, or 270°.",
+    href: "/tools/rotate",
+    icon: RotateCw,
+  },
+  {
+    title: "Delete Pages",
+    description: "Select and permanently remove unwanted pages from any PDF.",
+    href: "/tools/delete-pages",
+    icon: Trash2,
+  },
+  {
+    title: "Images to PDF",
+    description: "Convert PNG, JPG, or WebP images into a single PDF file.",
+    href: "/tools/images-to-pdf",
+    icon: FileImage,
+  },
+  {
+    title: "PDF to Images",
+    description: "Export every PDF page as a high-quality PNG image.",
+    href: "/tools/pdf-to-images",
+    icon: Image,
+  },
+  {
+    title: "Watermark PDF",
+    description: "Add custom text watermarks to all or selected pages.",
+    href: "/tools/watermark",
+    icon: Stamp,
+  },
+  {
+    title: "Page Numbers",
+    description: "Stamp page numbers on your PDF with full style control.",
+    href: "/tools/page-numbers",
+    icon: Hash,
+  },
+  {
+    title: "Fill & Sign",
+    description: "Add form fields, text, and image signatures to any PDF.",
+    href: "/tools/fill-sign",
     icon: PenLine,
   },
   {
@@ -37,52 +97,31 @@ const liveTools = [
     href: "/editor",
     icon: Highlighter,
   },
-  {
-    title: "Add Image",
-    description: "Place logos, stamps, screenshots, or signatures on PDF pages.",
-    href: "/editor",
-    icon: Image,
-  },
 ];
 
 const upcomingTools = [
   {
-    title: "Compress PDF",
-    description: "Reduce PDF size with backend compression.",
-    icon: FileArchive,
-  },
-  {
-    title: "Merge PDF",
-    description: "Combine multiple PDF files into one document.",
-    icon: Combine,
-  },
-  {
-    title: "Split PDF",
-    description: "Extract selected pages or split PDFs by range.",
-    icon: Scissors,
-  },
-  {
-    title: "Organize PDF",
-    description: "Reorder, rotate, and manage PDF pages visually.",
-    icon: Layers,
-  },
-  {
     title: "OCR PDF",
-    description: "Make scanned PDFs searchable and selectable.",
+    description: "Make scanned PDFs fully searchable and selectable with AI OCR.",
     icon: Brain,
   },
   {
     title: "PDF to Word",
-    description: "Convert PDFs into editable Word documents.",
+    description: "Convert PDFs into editable Word (.docx) documents.",
     icon: Wand2,
+  },
+  {
+    title: "Organise Pages",
+    description: "Drag and drop to reorder pages visually across multiple PDFs.",
+    icon: Layers,
   },
 ];
 
 const benefits = [
-  "Fast browser-side PDF editing",
-  "Clean professional workspace",
-  "Backend-ready premium roadmap",
-  "Built for OCR, compression, conversion, and payments later",
+  "100% browser-side — no files uploaded to any server",
+  "Works with PDFs up to hundreds of pages",
+  "Undo / redo, keyboard shortcuts, and auto-fit zoom",
+  "Export edits directly as a downloadable PDF",
 ];
 
 export default function HomePage() {
@@ -166,17 +205,16 @@ export default function HomePage() {
             <section id="tools" className="px-6 py-10 sm:px-10 lg:px-14">
               <div className="mb-7 grid gap-4 lg:grid-cols-[0.8fr_1fr] lg:items-end">
                 <div>
-                  <div className="section-eyebrow">Current tools</div>
-                  <h2 className="mt-2 section-title">Live PDF editing tools</h2>
+                  <div className="section-eyebrow">All tools</div>
+                  <h2 className="mt-2 section-title">Free PDF tools — fully in your browser</h2>
                 </div>
 
                 <p className="section-description max-w-2xl lg:justify-self-end">
-                  These tools are focused on the current browser-side phase and
-                  are suitable for demo.
+                  Every tool runs 100% in the browser. No files are uploaded to any server.
                 </p>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                 {liveTools.map((tool) => {
                   const Icon = tool.icon;
 
@@ -212,18 +250,17 @@ export default function HomePage() {
               <div className="mb-7 grid gap-4 lg:grid-cols-[0.8fr_1fr] lg:items-end">
                 <div>
                   <div className="text-sm font-semibold uppercase tracking-wide text-amber-600">
-                    Backend-ready roadmap
+                    Coming soon
                   </div>
-                  <h2 className="mt-2 section-title">Premium tools coming later</h2>
+                  <h2 className="mt-2 section-title">Server-powered tools</h2>
                 </div>
 
                 <p className="section-description max-w-2xl lg:justify-self-end">
-                  These tools can be connected to Supabase, Cloudflare storage,
-                  server-side processing, and payment gating later.
+                  These require backend processing — coming once the backend is live.
                 </p>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              <div className="grid gap-4 md:grid-cols-3">
                 {upcomingTools.map((tool) => {
                   const Icon = tool.icon;
 

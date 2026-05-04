@@ -2,14 +2,15 @@
 
 import { Header } from "@/components/Header";
 import { EditorToolbar } from "@/components/editor/EditorToolbar";
+import { PremiumModal } from "@/components/editor/PremiumModal";
 import {
   Bold,
   Copy,
+  Crown,
   Download,
   FileText,
   Italic,
   Loader2,
-  Lock,
   Minus,
   MousePointer2,
   Plus,
@@ -22,6 +23,7 @@ import {
 import { PDFDocument, rgb, StandardFonts } from "pdf-lib";
 import * as pdfjsLib from "pdfjs-dist";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createClient } from "@/lib/supabase/client";
 import type {
   ActiveTool,
   DragState,
@@ -134,6 +136,9 @@ export default function EditorPage() {
   const dragStateRef = useRef<DragState | null>(null);
   const drawStateRef = useRef<DrawState | null>(null);
   const highlightDragRef = useRef<DrawState | null>(null);
+  const thumbListRef = useRef<HTMLDivElement | null>(null);
+  const layerHistoryRef = useRef<PdfLayer[][]>([]);
+  const layerRedoRef = useRef<PdfLayer[][]>([]);
 
   const [fileName, setFileName] = useState("");
   const [status, setStatus] = useState("Upload a PDF to start editing.");
@@ -150,13 +155,54 @@ export default function EditorPage() {
   const [draftBox, setDraftBox] = useState<DraftBox | null>(null);
   const [textOverlay, setTextOverlay] = useState<TextOverlayItem[]>([]);
   const [exportMode, setExportMode] = useState<ExportMode>("full");
-  const [exportRange, setExportRange] = useState("1-3");
-  const [showFreeLimitNote, setShowFreeLimitNote] = useState(true);
+  const [exportRange, setExportRange] = useState("");
   const [ocrText, setOcrText] = useState("");
   const [ocrRewriteText, setOcrRewriteText] = useState("");
   const [selectedTextRects, setSelectedTextRects] = useState<SelectedTextRect[]>([]);
   const [ocrBusy, setOcrBusy] = useState(false);
   const [hoveredTextId, setHoveredTextId] = useState<string | null>(null);
+  const [capturedFontSize, setCapturedFontSize] = useState<number | null>(null);
+  const [showPremiumModal, setShowPremiumModal] = useState(false);
+  const [userTier, setUserTier] = useState<"free" | "pro" | "business">("pro"); // default pro for dev
+
+  // Load the user's tier from Supabase profiles table.
+  useEffect(() => {
+    const supabase = createClient();
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (!user) {
+        // Not logged in, default to free tier
+        setUserTier("free");
+        return;
+      }
+      
+      try {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("tier, is_premium")
+          .eq("id", user.id)
+          .single();
+        
+        if (error) {
+          console.error("Error fetching user tier:", error);
+          return;
+        }
+        
+        // If tier column exists, use it; otherwise fallback to is_premium for compatibility
+        if (data?.tier) {
+          setUserTier(data.tier as "free" | "pro" | "business");
+        } else if (data?.is_premium === true) {
+          setUserTier("pro"); // Migrate old boolean to pro tier
+        } else {
+          setUserTier("free");
+        }
+      } catch (err) {
+        console.error("Failed to load user tier:", err);
+      }
+    });
+  }, []);
+
+  const isPro = userTier === "pro" || userTier === "business";
+  const isBusiness = userTier === "business";
 
   useEffect(() => {
     pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
@@ -317,10 +363,72 @@ export default function EditorPage() {
       document.removeEventListener("mouseup", handleGlobalMouseUp);
     };
   }, [activeTool, currentPage, textOverlay]);
-  
-  
+
+  // Auto-update export range when a new PDF is loaded
+  useEffect(() => {
+    if (numPages > 0) setExportRange(`1-${numPages}`);
+  }, [numPages]);
+
+  // Scroll the active thumbnail into view when page changes
+  useEffect(() => {
+    if (!thumbListRef.current) return;
+    const activeBtn = thumbListRef.current.querySelector(`[data-page="${currentPage}"]`);
+    activeBtn?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [currentPage]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement;
+      if (target.tagName === "TEXTAREA" || target.tagName === "INPUT" || target.tagName === "SELECT") return;
+      // Delete / Backspace — delete selected layer
+      if ((e.key === "Delete" || e.key === "Backspace") && selectedLayerId) {
+        layerHistoryRef.current.push(layers.slice());
+        layerRedoRef.current = [];
+        setLayers((prev) => prev.filter((l) => l.id !== selectedLayerId));
+        setSelectedLayerId(null);
+        setStatus("Layer deleted.");
+        return;
+      }
+      // Escape — deselect / cancel drawing
+      if (e.key === "Escape") {
+        setSelectedLayerId(null);
+        setDraftBox(null);
+        drawStateRef.current = null;
+        return;
+      }
+      // Ctrl+Z / Cmd+Z — undo
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        const prev = layerHistoryRef.current.pop();
+        if (!prev) return;
+        layerRedoRef.current.push(layers.slice());
+        setLayers(prev);
+        setSelectedLayerId(null);
+        setStatus("Undo.");
+        return;
+      }
+      // Ctrl+Shift+Z / Ctrl+Y / Cmd+Shift+Z — redo
+      if (((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "z") || ((e.ctrlKey || e.metaKey) && e.key === "y")) {
+        e.preventDefault();
+        const next = layerRedoRef.current.pop();
+        if (!next) return;
+        layerHistoryRef.current.push(layers.slice());
+        setLayers(next);
+        setSelectedLayerId(null);
+        setStatus("Redo.");
+        return;
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedLayerId, layers]);
+
+
   const currentPageLayers = useMemo(() => layers.filter((layer) => layer.page === currentPage), [currentPage, layers]);
   const selectedLayer = useMemo(() => layers.find((layer) => layer.id === selectedLayerId), [layers, selectedLayerId]);
+  const canUndo = layerHistoryRef.current.length > 0;
+  const canRedo = layerRedoRef.current.length > 0;
   const showTextOverlay =
     activeTool === "select" || activeTool === "highlight" || activeTool === "edit";
   
@@ -330,24 +438,44 @@ export default function EditorPage() {
 
   async function renderThumbnail(pdf: pdfjsLib.PDFDocumentProxy, pageNumber: number) {
     const page = await pdf.getPage(pageNumber);
-    const viewport = page.getViewport({ scale: 0.18 });
+    const viewport = page.getViewport({ scale: 0.22 });
     const canvas = document.createElement("canvas");
     const context = canvas.getContext("2d");
     if (!context) return "";
-    const outputScale = window.devicePixelRatio || 1;
+    const outputScale = Math.min(window.devicePixelRatio || 1, 2);
     canvas.width = Math.floor(viewport.width * outputScale);
     canvas.height = Math.floor(viewport.height * outputScale);
     canvas.style.width = `${viewport.width}px`;
     canvas.style.height = `${viewport.height}px`;
     context.setTransform(outputScale, 0, 0, outputScale, 0, 0);
     await page.render({ canvasContext: context, viewport }).promise;
-    return canvas.toDataURL("image/png");
+    return canvas.toDataURL("image/png", 0.85);
+  }
+
+  async function generateThumbsBackground(pdf: pdfjsLib.PDFDocumentProxy, totalPages: number) {
+    const BATCH = 6;
+    for (let start = 1; start <= totalPages; start += BATCH) {
+      const end = Math.min(start + BATCH - 1, totalPages);
+      await Promise.all(
+        Array.from({ length: end - start + 1 }, async (_, i) => {
+          const pageNum = start + i;
+          try {
+            const url = await renderThumbnail(pdf, pageNum);
+            setPageThumbs((prev) => prev.map((t) => (t.pageNumber === pageNum ? { ...t, url } : t)));
+          } catch {
+            // Silently skip failed thumbnails
+          }
+        })
+      );
+      // Yield to UI thread between batches
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
   }
 
   async function handleFile(file?: File) {
     if (!file) return;
     setBusy(true);
-    setStatus("Loading PDF preview...");
+    setStatus("Loading PDF...");
     try {
       const arrayBuffer = await file.arrayBuffer();
       if (!isPdfFile(file, arrayBuffer)) {
@@ -365,13 +493,16 @@ export default function EditorPage() {
       setActiveTool("none");
       setDraftBox(null);
       setTextOverlay([]);
-      const thumbs: PageThumb[] = [];
-      for (let pageNumber = 1; pageNumber <= Math.min(loadedPdf.numPages, 40); pageNumber += 1) {
-        thumbs.push({ pageNumber, url: await renderThumbnail(loadedPdf, pageNumber) });
-      }
-      setPageThumbs(thumbs);
+      // Show all pages immediately as placeholders, then fill thumbnails in background
+      const placeholders: PageThumb[] = Array.from({ length: loadedPdf.numPages }, (_, i) => ({
+        pageNumber: i + 1,
+        url: "",
+      }));
+      setPageThumbs(placeholders);
       await renderPage(1);
-      setStatus("PDF loaded. Choose a tool to start editing.");
+      setStatus(`PDF loaded — ${loadedPdf.numPages} page${loadedPdf.numPages !== 1 ? "s" : ""}. Choose a tool to start editing.`);
+      // Generate thumbnails in background without blocking
+      void generateThumbsBackground(loadedPdf, loadedPdf.numPages);
     } catch (error) {
       console.error(error);
       setStatus("Unable to load PDF. Please try another file.");
@@ -459,6 +590,8 @@ export default function EditorPage() {
         imageBytes: image.imageBytes,
         imageKind: image.imageKind,
       };
+      layerHistoryRef.current.push(layers.slice());
+      layerRedoRef.current = [];
       setLayers((prev) => [...prev, newLayer]);
       setSelectedLayerId(newLayer.id);
       setActiveTool("object");
@@ -473,6 +606,8 @@ export default function EditorPage() {
 
   function addTextSignatureLayer() {
     if (!fileBytesRef.current) return setStatus("Upload a PDF first.");
+    const sigText = window.prompt("Enter your signature name:", "Your Name") ?? "Your Signature";
+    if (!sigText.trim()) return;
     const newLayer: PdfLayer = {
       id: crypto.randomUUID(),
       page: currentPage,
@@ -481,11 +616,13 @@ export default function EditorPage() {
       yPercent: 76,
       widthPercent: 34,
       heightPercent: 7,
-      text: "Your Signature",
-      fontSize: 18,
+      text: sigText.trim(),
+      fontSize: 22,
       isItalic: true,
       isBold: false,
     };
+    layerHistoryRef.current.push(layers.slice());
+    layerRedoRef.current = [];
     setLayers((prev) => [...prev, newLayer]);
     setSelectedLayerId(newLayer.id);
     setActiveTool("object");
@@ -514,6 +651,8 @@ export default function EditorPage() {
         imageBytes: image.imageBytes,
         imageKind: image.imageKind,
       };
+      layerHistoryRef.current.push(layers.slice());
+      layerRedoRef.current = [];
       setLayers((prev) => [...prev, newLayer]);
       setSelectedLayerId(newLayer.id);
       setActiveTool("object");
@@ -527,6 +666,8 @@ export default function EditorPage() {
   }
 
   function deleteLayer(layerId: string) {
+    layerHistoryRef.current.push(layers.slice());
+    layerRedoRef.current = [];
     setLayers((prev) => prev.filter((layer) => layer.id !== layerId));
     if (selectedLayerId === layerId) setSelectedLayerId(null);
     setStatus("Layer deleted.");
@@ -547,6 +688,8 @@ export default function EditorPage() {
       xPercent: clamp(layer.xPercent + 3, 0, 100 - layer.widthPercent),
       yPercent: clamp(layer.yPercent + 3, 0, 100 - layer.heightPercent),
     };
+    layerHistoryRef.current.push(layers.slice());
+    layerRedoRef.current = [];
     setLayers((prev) => [...prev, duplicateLayer]);
     setSelectedLayerId(duplicateLayer.id);
     setActiveTool("object");
@@ -554,6 +697,10 @@ export default function EditorPage() {
   }
 
   function resetEditor() {
+    if (layers.length > 0) {
+      layerHistoryRef.current.push(layers.slice());
+      layerRedoRef.current = [];
+    }
     setLayers([]);
     setSelectedLayerId(null);
     setActiveTool("none");
@@ -563,6 +710,8 @@ export default function EditorPage() {
   }
 
   function clearCurrentPageLayers() {
+    layerHistoryRef.current.push(layers.slice());
+    layerRedoRef.current = [];
     setLayers((prev) => prev.filter((layer) => layer.page !== currentPage));
     setSelectedLayerId(null);
     setActiveTool("none");
@@ -687,30 +836,6 @@ export default function EditorPage() {
       return;
     }
 
-    if (activeTool === "highlight") {
-      event.preventDefault();
-      event.stopPropagation();
-      const { xPercent, yPercent } = getPointerPercent(event);
-      highlightDragRef.current = {
-        startXPercent: xPercent,
-        startYPercent: yPercent,
-        currentXPercent: xPercent,
-        currentYPercent: yPercent,
-      };
-      event.currentTarget.setPointerCapture(event.pointerId);
-      document.body.style.userSelect = "none";
-      document.body.style.touchAction = "none";
-      document.body.style.overscrollBehavior = "none";
-      document.documentElement.style.touchAction = "none";
-      document.documentElement.style.overscrollBehavior = "none";
-      return;
-    }
-
-    if (activeTool !== "text") {
-      if (activeTool === "object") setSelectedLayerId(null);
-      return;
-    }
-
     event.preventDefault();
     event.stopPropagation();
     const { xPercent, yPercent } = getPointerPercent(event);
@@ -808,6 +933,8 @@ export default function EditorPage() {
         opacity: 0.42,
       }));
 
+      layerHistoryRef.current.push(layers.slice());
+      layerRedoRef.current = [];
       setLayers((prev) => [...prev, ...newLayers]);
       setSelectedLayerId(newLayers[newLayers.length - 1]?.id || null);
       setStatus(`Highlighted ${newLayers.length} text item${newLayers.length > 1 ? "s" : ""}.`);
@@ -841,6 +968,8 @@ export default function EditorPage() {
       isBold: false,
       isItalic: false,
     };
+    layerHistoryRef.current.push(layers.slice());
+    layerRedoRef.current = [];
     setLayers((prev) => [...prev, newLayer]);
     setSelectedLayerId(newLayer.id);
     setActiveTool("object");
@@ -873,10 +1002,13 @@ export default function EditorPage() {
       isBold: false,
       isItalic: false,
       coverText: true,
+      textColor: "#0d1120", // Default dark text color (matches most PDFs)
     };
+    layerHistoryRef.current.push(layers.slice());
+    layerRedoRef.current = [];
     setLayers((prev) => [...prev, newLayer]);
     setSelectedLayerId(newLayer.id);
-    setStatus("PDF text converted to editable visual layer. Edit it, then export.");
+    setStatus("Text replacement layer created. White background covers old text. Edit & export.");
   }
 
   function rectanglesIntersect(
@@ -959,7 +1091,24 @@ export default function EditorPage() {
     setOcrRewriteText(selectedText);
     setSelectedTextRects(rects);
     setActiveTool("object");
-    setStatus("Selected text captured. Edit the replacement text, then click Replace Visually.");
+    // Detect font size from overlapping textOverlay items
+    const matchedFontSizes = textOverlay
+      .filter((item) =>
+        rects.some((rect) =>
+          rectanglesIntersect(
+            { x: rect.xPercent, y: rect.yPercent, width: rect.widthPercent, height: rect.heightPercent },
+            { x: item.leftPercent, y: item.topPercent, width: item.widthPercent, height: item.heightPercent }
+          )
+        )
+      )
+      .map((item) => item.fontSizePx);
+    if (matchedFontSizes.length) {
+      const avgPx = matchedFontSizes.reduce((s, v) => s + v, 0) / matchedFontSizes.length;
+      setCapturedFontSize(clamp(Math.round(avgPx / Math.max(renderScale, 0.1)), 6, 72));
+    } else {
+      setCapturedFontSize(null);
+    }
+    setStatus("Selected text captured. Edit the replacement text, then click Apply Replace.");
   }
 
   function replaceSelectedTextVisually() {
@@ -980,11 +1129,12 @@ export default function EditorPage() {
       selectedTextRects.reduce((sum, rect) => sum + rect.heightPercent, 0) /
       selectedTextRects.length;
 
-    const estimatedFontSize = clamp(
-      Math.round(((averageRectHeight / 100) * canvasSize.height * 0.78) / Math.max(renderScale, 0.1)),
-      7,
-      48
-    );
+    const estimatedFontSize = capturedFontSize ??
+      clamp(
+        Math.round(((averageRectHeight / 100) * canvasSize.height * 0.78) / Math.max(renderScale, 0.1)),
+        7,
+        48
+      );
 
     const paddingX = 0.35;
     const paddingY = 0.2;
@@ -1004,6 +1154,8 @@ export default function EditorPage() {
       coverText: true,
     };
 
+    layerHistoryRef.current.push(layers.slice());
+    layerRedoRef.current = [];
     setLayers((prev) => [...prev, newLayer]);
     setSelectedLayerId(newLayer.id);
     setActiveTool("object");
@@ -1110,10 +1262,17 @@ export default function EditorPage() {
             const lineHeight = fontSize * 1.22;
             const paddingX = Math.max(2, pdfWidth * 0.035);
             const paddingY = Math.max(2, pdfHeight * 0.12);
+            const textRgbColor = (() => {
+              const hex = layer.textColor;
+              if (hex && /^#[0-9a-fA-F]{6}$/.test(hex)) {
+                return rgb(parseInt(hex.slice(1, 3), 16) / 255, parseInt(hex.slice(3, 5), 16) / 255, parseInt(hex.slice(5, 7), 16) / 255);
+              }
+              return rgb(0.05, 0.07, 0.16);
+            })();
             lines.forEach((line, index) => {
               const y = pdfY + pdfHeight - paddingY - fontSize - index * lineHeight;
               if (y > pdfY) {
-                page.drawText(line, { x: pdfX + paddingX, y, size: fontSize, font, color: rgb(0.05, 0.07, 0.16), maxWidth: Math.max(10, pdfWidth - paddingX * 2) });
+                page.drawText(line, { x: pdfX + paddingX, y, size: fontSize, font, color: textRgbColor, maxWidth: Math.max(10, pdfWidth - paddingX * 2) });
               }
             });
           }
@@ -1128,7 +1287,7 @@ export default function EditorPage() {
         outputBytes = await selectedPdf.save();
       }
 
-      const blob = new Blob([outputBytes], { type: "application/pdf" });
+      const blob = new Blob([outputBytes.buffer as ArrayBuffer], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -1205,7 +1364,7 @@ export default function EditorPage() {
             setSelectedLayerId(layer.id);
           }}
           onPointerDown={(event) => startMove(event, layer)}
-          className={`absolute overflow-hidden rounded-lg border bg-white/80 transition ${isSelected ? "border-indigo-400 ring-2 ring-indigo-100" : "border-transparent hover:border-indigo-200"}`}
+          className={`absolute rounded-lg border transition ${isSelected ? "border-indigo-400 ring-2 ring-indigo-100" : "border-transparent hover:border-indigo-200"}`}
           style={{ ...getLayerStyle(layer), pointerEvents: canEditObject ? "auto" : "none", touchAction: "none", zIndex: 20 }}
         >
           {layer.imageUrl ? <img src={layer.imageUrl} alt="PDF layer" className="h-full w-full object-contain" draggable={false} /> : null}
@@ -1215,6 +1374,14 @@ export default function EditorPage() {
     }
 
     const isSignature = layer.type === "signature";
+    const hasImage = Boolean(layer.imageUrl);
+    // coverText layers need solid-white bg to fully hide original text
+    // signature + plain text layers should have NO background (transparent ink-on-paper look)
+    const bgClass = hasImage
+      ? ""
+      : layer.coverText
+        ? "bg-white"
+        : ""; // transparent for signatures and plain text boxes
 
     return (
       <div
@@ -1226,26 +1393,44 @@ export default function EditorPage() {
           setSelectedLayerId(layer.id);
         }}
         onPointerDown={(event) => startMove(event, layer)}
-        className={`absolute rounded-lg border text-slate-950 shadow-sm transition ${
-          isSelected ? "border-indigo-400 bg-white/95 ring-2 ring-indigo-100" : layer.coverText ? "border-transparent bg-white/95 hover:border-indigo-200" : "border-transparent bg-white/80 hover:border-indigo-200"
+        className={`absolute rounded-lg border transition ${
+          isSelected
+            ? `border-indigo-400 ring-2 ring-indigo-100 ${bgClass}`
+            : layer.coverText
+              ? `border-dashed border-indigo-200 ${bgClass} hover:border-indigo-400`
+              : `border-transparent ${bgClass} hover:border-indigo-200`
         }`}
         style={{ ...getLayerStyle(layer), pointerEvents: canEditObject ? "auto" : "none", touchAction: "none", zIndex: 25 }}
       >
-        {layer.imageUrl ? (
-          <img src={layer.imageUrl} alt={isSignature ? "Signature layer" : "PDF layer"} className="h-full w-full object-contain" draggable={false} />
+        {/* Transparent drag overlay in object mode so the textarea doesn't swallow pointer events */}
+        {canEditObject && !hasImage && (
+          <div className="absolute inset-0 cursor-move" style={{ zIndex: 5 }} aria-hidden />
+        )}
+        {hasImage ? (
+          <img src={layer.imageUrl} alt={isSignature ? "Signature" : "Image layer"} className="h-full w-full object-contain" draggable={false} />
         ) : (
           <textarea
             value={layer.text || ""}
             data-no-drag="true"
-            onPointerDown={(event) => event.stopPropagation()}
+            readOnly={canEditObject}
+            onPointerDown={(event) => {
+              if (!canEditObject) event.stopPropagation();
+            }}
             onClick={(event) => {
               if (!canEditObject) return;
               event.stopPropagation();
               setSelectedLayerId(layer.id);
             }}
             onChange={(event) => updateLayer(layer.id, { text: event.target.value })}
-            className={`h-full w-full resize-none rounded-md bg-transparent px-2 py-1 outline-none ${isSignature ? "font-serif" : "font-sans"}`}
-            style={{ fontSize: layer.fontSize || 15, lineHeight: 1.2, fontWeight: layer.isBold ? 800 : 600, fontStyle: layer.isItalic ? "italic" : "normal", letterSpacing: "-0.01em" }}
+            className={`absolute inset-0 h-full w-full resize-none rounded-md bg-transparent px-2 py-1 outline-none ${isSignature ? "font-serif" : "font-sans"}`}
+            style={{
+              fontSize: layer.fontSize || 15,
+              lineHeight: 1.2,
+              fontWeight: layer.isBold ? 800 : 400,
+              fontStyle: layer.isItalic ? "italic" : "normal",
+              letterSpacing: isSignature ? "0.01em" : "-0.01em",
+              color: layer.textColor || (isSignature ? "#1e1b4b" : "#0f172a"),
+            }}
           />
         )}
         {renderResizeHandles(layer)}
@@ -1349,10 +1534,14 @@ export default function EditorPage() {
                 event.stopPropagation();
                 addReplacementTextLayer(item);
               }}
-              className={`absolute whitespace-pre rounded-[2px] ${
+              className={`pdf-text-overlay-span absolute whitespace-pre rounded-[2px] ${
                 activeTool === "edit" && isHovered
                   ? "bg-indigo-300/25 outline outline-1 outline-indigo-300/60"
-                  : ""
+                  : activeTool === "select" && isHovered
+                    ? "bg-emerald-300/20 outline outline-1 outline-emerald-400/50"
+                    : activeTool === "highlight" && isHovered
+                      ? "bg-amber-300/20 outline outline-1 outline-amber-400/50"
+                      : ""
               }`}
               style={{
                 left: `${item.leftPercent}%`,
@@ -1361,9 +1550,10 @@ export default function EditorPage() {
                 height: `${item.heightPercent}%`,
                 fontSize: item.fontSizePx,
                 lineHeight: 1,
-                color: "transparent",
+                color: "rgba(0,0,0,0)",
                 WebkitTextFillColor: "transparent",
                 caretColor: "transparent",
+                WebkitUserSelect: activeTool === "select" || activeTool === "highlight" ? "text" : "none",
                 cursor:
                   activeTool === "select" || activeTool === "highlight" ? "text" : "pointer",
                 userSelect:
@@ -1392,6 +1582,7 @@ export default function EditorPage() {
   return (
     <>
       <Header />
+      {showPremiumModal && <PremiumModal onClose={() => setShowPremiumModal(false)} />}
       <main className="min-h-screen bg-gradient-to-br from-indigo-50 via-white to-amber-50">
         <section className="mx-auto max-w-7xl px-3 py-4 sm:px-5 sm:py-7">
           <div className="overflow-hidden rounded-[1.5rem] border border-indigo-100 bg-white/90 shadow-xl shadow-indigo-100/60 backdrop-blur sm:rounded-[2rem]">
@@ -1399,12 +1590,36 @@ export default function EditorPage() {
               <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
                 <div>
                   <div className="mb-3 inline-flex items-center gap-2 rounded-full bg-white/15 px-3 py-1 text-xs font-bold text-white ring-1 ring-white/20">
-                    <Sparkles size={14} /> PDFMantra Editor Workspace
+                    <Sparkles size={14} /> PDFMantra Editor
                   </div>
-                  <h1 className="text-2xl font-black tracking-[-0.03em] sm:text-4xl lg:text-5xl">PDF Editor</h1>
-                  <p className="mt-3 max-w-2xl text-sm font-semibold leading-6 text-indigo-50">{status}</p>
+                  <h1 className="text-2xl font-black tracking-[-0.03em] sm:text-3xl lg:text-4xl">
+                    {fileName ? (
+                      <span className="flex items-center gap-3">
+                        <FileText size={28} className="opacity-70" />
+                        <span className="max-w-[480px] truncate">{fileName}</span>
+                      </span>
+                    ) : (
+                      "PDF Editor"
+                    )}
+                  </h1>
+                  {numPages > 0 && (
+                    <p className="mt-1 text-sm font-medium text-indigo-200">{numPages} pages · page {currentPage} of {numPages}</p>
+                  )}
                 </div>
-                <div className="rounded-2xl bg-white/15 px-4 py-3 text-sm font-bold text-white ring-1 ring-white/20">Text selection highlight + visual editing</div>
+                <div className="flex flex-col items-end gap-2">
+                  <div className="rounded-2xl bg-white/15 px-4 py-2 text-xs font-bold text-white ring-1 ring-white/20 hidden lg:block">
+                    <span className="opacity-70">Del</span> delete &bull; <span className="opacity-70">Ctrl+Z</span> undo &bull; <span className="opacity-70">Esc</span> deselect
+                  </div>
+                  {!isPro && (
+                    <button
+                      type="button"
+                      onClick={() => setShowPremiumModal(true)}
+                      className="inline-flex items-center gap-2 rounded-2xl bg-amber-400 px-4 py-2 text-xs font-black text-slate-950 shadow-md shadow-amber-900/20 transition hover:bg-amber-300"
+                    >
+                      <Crown size={13} strokeWidth={2.5} /> Upgrade to Pro
+                    </button>
+                  )}
+                </div>
                 <input ref={fileInputRef} type="file" accept="application/pdf" className="hidden" onChange={(event) => handleFile(event.target.files?.[0])} />
                 <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => addImageLayer(event.target.files?.[0])} />
                 <input ref={signatureImageInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => addImageSignatureLayer(event.target.files?.[0])} />
@@ -1421,9 +1636,13 @@ export default function EditorPage() {
             >
               <div className="mx-auto mb-3 flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-700 text-white shadow-md shadow-indigo-200"><FileText size={22} /></div>
               <div className="break-words font-black text-slate-950">{fileName || "Drop your PDF here"}</div>
-              <div className="mt-1 text-sm font-semibold text-slate-500">Use Highlight to drag across exact PDF text. Use Edit to convert PDF text into editable visual text.</div>
+              <div className="mt-1 text-sm font-medium text-slate-500">
+                {fileName
+                  ? <span className="inline-flex items-center gap-1 text-indigo-600"><Sparkles size={12} /> {status}</span>
+                  : "Drag & drop a PDF or click Upload to begin editing"}
+              </div>
               <button type="button" onClick={() => fileInputRef.current?.click()} className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl bg-amber-400 px-5 py-3 text-sm font-black text-slate-950 shadow-lg shadow-amber-100 transition hover:bg-amber-300">
-                <Upload size={18} /> Upload PDF
+                <Upload size={18} /> {fileName ? "Replace PDF" : "Upload PDF"}
               </button>
             </div>
 
@@ -1438,7 +1657,7 @@ export default function EditorPage() {
                   </label>
                   <div className="flex items-center gap-2">
                     <button type="button" onClick={zoomOut} className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700"><ZoomOut size={18} /></button>
-                    <div className="rounded-2xl bg-slate-100 px-4 py-3 text-sm font-black text-slate-700">{Math.round(zoomLevel * 100)}%</div>
+                    <button type="button" onClick={() => setZoomLevel(1)} className="rounded-2xl bg-slate-100 px-4 py-3 text-sm font-black text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition" title="Reset to fit">{Math.round(zoomLevel * 100)}%</button>
                     <button type="button" onClick={zoomIn} className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-700"><ZoomIn size={18} /></button>
                   </div>
                 </div>
@@ -1450,6 +1669,9 @@ export default function EditorPage() {
                 <EditorToolbar
                   activeTool={activeTool}
                   hasSelectedLayer={Boolean(selectedLayer)}
+                  canUndo={canUndo}
+                  canRedo={canRedo}
+                  isPremium={isPro}
                   onSelectTool={selectEditorTool}
                   onImageClick={() => imageInputRef.current?.click()}
                   onSignatureClick={addTextSignatureLayer}
@@ -1458,8 +1680,36 @@ export default function EditorPage() {
                   onDuplicate={duplicateSelectedLayer}
                   onClearPage={clearCurrentPageLayers}
                   onReset={resetEditor}
+                  onUndo={() => {
+                    const prev = layerHistoryRef.current.pop();
+                    if (!prev) return;
+                    layerRedoRef.current.push(layers.slice());
+                    setLayers(prev);
+                    setSelectedLayerId(null);
+                    setStatus("Undo.");
+                  }}
+                  onRedo={() => {
+                    const next = layerRedoRef.current.pop();
+                    if (!next) return;
+                    layerHistoryRef.current.push(layers.slice());
+                    setLayers(next);
+                    setSelectedLayerId(null);
+                    setStatus("Redo.");
+                  }}
+                  onPremiumRequired={() => setShowPremiumModal(true)}
                   onExport={exportPdf}
                 />
+
+                {/* Status bar */}
+                <div className="mt-2.5 flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-500">
+                  <span className={`h-2 w-2 flex-shrink-0 rounded-full ${busy ? "animate-pulse bg-amber-400" : "bg-emerald-400"}`} />
+                  <span className="truncate">{status}</span>
+                  {currentPageLayers.length > 0 && (
+                    <span className="ml-auto flex-shrink-0 rounded-md bg-indigo-100 px-2 py-0.5 text-indigo-600 font-bold">
+                      {currentPageLayers.length} layer{currentPageLayers.length !== 1 ? "s" : ""}
+                    </span>
+                  )}
+                </div>
 
                 {selectedLayer && (
                   <div className="mt-3 flex min-h-11 flex-wrap items-center gap-2 rounded-2xl border border-indigo-100 bg-white px-3 py-2 shadow-sm">
@@ -1524,6 +1774,20 @@ export default function EditorPage() {
                         >
                           <Plus size={15} />
                         </button>
+
+                        {/* Text color picker */}
+                        <label className="relative inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-xl border border-slate-200 transition hover:bg-slate-50" title="Text color">
+                          <div
+                            className="h-4 w-4 rounded-full border border-slate-300"
+                            style={{ background: selectedLayer.textColor || "#0f172a" }}
+                          />
+                          <input
+                            type="color"
+                            value={selectedLayer.textColor || "#0f172a"}
+                            onChange={(e) => updateLayer(selectedLayer.id, { textColor: e.target.value })}
+                            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                          />
+                        </label>
                       </>
                     )}
 
@@ -1558,8 +1822,8 @@ export default function EditorPage() {
                 )}
               </div>
 
-              <div className="grid min-h-[560px] grid-cols-1 lg:grid-cols-[180px_1fr]">
-                <aside className="border-b border-slate-200 bg-slate-50/80 p-3 lg:border-b-0 lg:border-r lg:p-4">
+              <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] min-h-[560px] lg:h-[680px]">
+                <aside className="border-b border-slate-200 bg-slate-50/80 p-3 lg:border-b-0 lg:border-r lg:p-4 lg:overflow-y-auto lg:flex lg:flex-col">
                   <div className="mb-3 flex items-center gap-2 text-sm font-black text-slate-950"><FileText size={16} /> Pages</div>
                   {numPages > 0 && (
                     <label className="mb-3 block lg:hidden">
@@ -1572,13 +1836,15 @@ export default function EditorPage() {
                   {numPages === 0 ? (
                     <p className="rounded-2xl border border-dashed border-slate-200 bg-white p-4 text-sm text-slate-500">No PDF uploaded.</p>
                   ) : (
-                    <div className="flex gap-2 overflow-x-auto pb-2 lg:block lg:overflow-visible lg:pb-0">
+                    <div ref={thumbListRef} className="flex gap-2 overflow-x-auto pb-2 lg:flex lg:flex-col lg:gap-2 lg:overflow-y-auto lg:pb-0 lg:flex-1">
                       {Array.from({ length: numPages }).map((_, index) => {
                         const pageNumber = index + 1;
                         const thumb = pageThumbs.find((item) => item.pageNumber === pageNumber);
                         return (
-                          <button key={pageNumber} type="button" onClick={() => selectPage(pageNumber)} className={`min-w-[86px] rounded-2xl border p-2 text-left text-xs transition lg:mb-2 lg:w-full lg:min-w-0 lg:p-3 lg:text-sm ${currentPage === pageNumber ? "border-indigo-600 bg-indigo-50 font-black text-indigo-700 shadow-sm" : "border-slate-200 bg-white font-semibold text-slate-700 hover:border-indigo-200 hover:bg-indigo-50"}`}>
-                            {thumb?.url ? <img src={thumb.url} alt={`Page ${pageNumber}`} className="mb-2 h-20 w-full rounded-lg object-contain bg-slate-100 lg:h-24" /> : null}
+                          <button key={pageNumber} data-page={pageNumber} type="button" onClick={() => selectPage(pageNumber)} className={`min-w-[86px] flex-shrink-0 rounded-2xl border p-2 text-left text-xs transition lg:w-full lg:min-w-0 lg:p-2 lg:text-sm ${currentPage === pageNumber ? "border-indigo-600 bg-indigo-50 font-black text-indigo-700 shadow-sm" : "border-slate-200 bg-white font-semibold text-slate-700 hover:border-indigo-200 hover:bg-indigo-50"}`}>
+                            {thumb?.url
+                              ? <img src={thumb.url} alt={`Page ${pageNumber}`} loading="lazy" className="mb-1 h-20 w-full rounded-lg object-contain bg-slate-100 lg:h-20" />
+                              : <div className="mb-1 h-20 w-full rounded-lg bg-slate-200 animate-pulse lg:h-20" />}
                             Page {pageNumber}
                           </button>
                         );
@@ -1608,49 +1874,71 @@ export default function EditorPage() {
                     <canvas ref={canvasRef} className={fileName ? "block" : "hidden"} />
                     {currentPageLayers.map((layer) => renderLayer(layer))}
                     {draftBox && activeTool === "text" && <div className="pointer-events-none absolute z-30 rounded-md border-2 border-dashed border-indigo-500 bg-indigo-100/35" style={{ left: `${draftBox.xPercent}%`, top: `${draftBox.yPercent}%`, width: `${draftBox.widthPercent}%`, height: `${draftBox.heightPercent}%` }} />}
+                    {/* Highlight captured text-replace selection rects */}
+                    {selectedTextRects.map((rect, i) => (
+                      <div
+                        key={i}
+                        className="pointer-events-none absolute"
+                        style={{
+                          left: `${rect.xPercent}%`,
+                          top: `${rect.yPercent}%`,
+                          width: `${rect.widthPercent}%`,
+                          height: `${rect.heightPercent}%`,
+                          backgroundColor: "rgba(99,102,241,0.18)",
+                          border: "1px solid rgba(99,102,241,0.5)",
+                          zIndex: 45,
+                        }}
+                      />
+                    ))}
                     {renderTextOverlay()}
                   </div>
                 </section>
               </div>
             </div>
 
-            <div className="mx-3 mb-3 rounded-3xl border border-indigo-100 bg-indigo-50 p-4 sm:mx-5">
-              <div className="grid gap-4 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
+            <div className="mx-3 mb-3 rounded-3xl border border-slate-200 bg-white p-4 sm:mx-5">
+              <div className="grid gap-4 lg:grid-cols-[220px_1fr_auto] lg:items-start">
                 <div>
-                  <div className="flex items-center gap-2 text-lg font-black text-indigo-950">
-                    <Wand2 size={18} /> Selected Text Replace
+                  <div className="flex items-center gap-2 text-base font-black text-slate-950">
+                    <Wand2 size={17} className="text-indigo-600" /> Replace Text
+                    {!isPro && (
+                      <span
+                        className="ml-1 inline-flex cursor-pointer items-center gap-1 rounded-lg bg-amber-100 px-2 py-0.5 text-[10px] font-black text-amber-700 transition hover:bg-amber-200"
+                        onClick={() => setShowPremiumModal(true)}
+                        title="Pro feature"
+                      >
+                        <Crown size={9} strokeWidth={3} /> PRO
+                      </span>
+                    )}
                   </div>
-                  <p className="mt-2 text-sm font-semibold leading-6 text-indigo-800">
-                    In Select mode, select text on the PDF, fetch it below, rewrite it, then replace it visually.
+                  <p className="mt-1.5 text-xs font-medium leading-5 text-slate-500">
+                    Switch to <strong>Select</strong> mode, drag to select text on the PDF, then use the controls below to replace it visually.
                   </p>
-                  <div className="mt-3 rounded-2xl border border-amber-100 bg-amber-50 p-3 text-xs font-bold leading-5 text-amber-900">
-                    <div className="mb-1 flex items-center gap-2 font-black">
-                      <Lock size={14} /> Backend upgrade later
-                    </div>
-                    This covers the selected text with a white patch and adds replacement text above it. Exact same-font internal PDF text rewriting will be premium/backend later.
-                  </div>
                 </div>
 
                 <div className="grid gap-3">
-                  <label className="block">
-                    <span className="text-sm font-black text-indigo-950">Selected text</span>
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between">
+                      <span className="text-xs font-bold uppercase tracking-wide text-slate-600">Original text</span>
+                      {ocrText && <span className="text-xs font-semibold text-slate-400">{ocrText.length} chars</span>}
+                    </div>
                     <textarea
                       value={ocrText}
                       readOnly
-                      placeholder="Select PDF text, then click Get Selected Text..."
-                      className="mt-2 h-24 w-full resize-none rounded-2xl border border-indigo-100 bg-white/80 px-4 py-3 text-sm font-semibold text-slate-700 outline-none"
+                      placeholder="1. Switch to Select mode  2. Drag over PDF text  3. Click Capture below"
+                      className="h-20 w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm font-medium text-slate-700 outline-none placeholder:text-slate-400 placeholder:text-xs"
                     />
-                  </label>
+                  </div>
 
-                  <label className="block">
-                    <span className="text-sm font-black text-indigo-950">Replacement text</span>
+                  <div>
+                    <span className="mb-1.5 block text-xs font-bold uppercase tracking-wide text-slate-600">Replacement text</span>
                     <textarea
                       value={ocrRewriteText}
                       onChange={(event) => setOcrRewriteText(event.target.value)}
-                      placeholder="Write replacement text here..."
-                      className="mt-2 h-24 w-full resize-none rounded-2xl border border-indigo-100 bg-white px-4 py-3 text-sm font-semibold text-slate-900 outline-none focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100"
+                      placeholder="Type replacement text here..."
+                      className="h-20 w-full resize-none rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium text-slate-900 outline-none transition focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100"
                     />
-                  </label>
+                  </div>
                 </div>
 
                 <div className="flex flex-col gap-2">
@@ -1659,55 +1947,53 @@ export default function EditorPage() {
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={getSelectedPdfTextForReplace}
                     disabled={!fileName}
-                    className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-indigo-700 px-5 py-3 text-sm font-black text-white transition hover:bg-indigo-800 disabled:cursor-not-allowed disabled:bg-slate-300"
+                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-300"
                   >
-                    <Wand2 size={16} /> Get Selected Text
+                    <Wand2 size={15} /> Capture Selection
                   </button>
 
                   <button
                     type="button"
-                    onClick={replaceSelectedTextVisually}
-                    disabled={!selectedTextRects.length || !ocrRewriteText.trim()}
-                    className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl border border-indigo-100 bg-white px-5 py-3 text-sm font-black text-indigo-700 transition hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={() => isPro ? replaceSelectedTextVisually() : setShowPremiumModal(true)}
+                    disabled={isPro && (!selectedTextRects.length || !ocrRewriteText.trim())}
+                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
                   >
-                    <Plus size={16} /> Replace Visually
+                    {!isPro ? <><Crown size={14} /> Unlock Replace</> : <><Plus size={15} /> Apply Replace</>}
                   </button>
 
                   <button
                     type="button"
                     onClick={extractCurrentPageText}
                     disabled={ocrBusy || !fileName}
-                    className="inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl border border-slate-200 bg-white/70 px-5 py-3 text-xs font-black text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                    className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-bold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {ocrBusy ? (
-                      <>
-                        <Loader2 className="animate-spin" size={15} /> Reading
-                      </>
+                      <><Loader2 className="animate-spin" size={14} /> Reading...</>
                     ) : (
-                      <>
-                        <FileText size={15} /> Extract Full Page
-                      </>
+                      <><FileText size={14} /> Extract All Text</>
                     )}
                   </button>
 
-                  {ocrText ? (
-                    <div className="rounded-2xl bg-white/75 px-3 py-2 text-xs font-bold text-slate-600">
-                      {ocrText.length} characters ready. {selectedTextRects.length ? `${selectedTextRects.length} selected area${selectedTextRects.length === 1 ? "" : "s"}.` : ""}
+                  {selectedTextRects.length > 0 && (
+                    <div className="rounded-xl bg-indigo-50 px-3 py-2 text-xs font-semibold text-indigo-700">
+                      {selectedTextRects.length} area{selectedTextRects.length !== 1 ? "s" : ""} selected on page
                     </div>
-                  ) : null}
+                  )}
                 </div>
               </div>
             </div>
 
+            {/* Export panel */}
             <div className="mx-3 mb-3 rounded-3xl border border-slate-200 bg-white p-4 sm:mx-5 sm:mb-5">
+              <div className="mb-3 text-sm font-black text-slate-700 flex items-center gap-2">
+                <Download size={15} className="text-indigo-600" /> Export PDF
+              </div>
               <div className="grid gap-3 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
-                <label className="text-sm font-black text-slate-700">Export mode<select value={exportMode} onChange={(event) => setExportMode(event.target.value as ExportMode)} className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold outline-none"><option value="full">Full edited PDF</option><option value="current">Current page only</option><option value="range">Page range</option></select></label>
-                <label className="text-sm font-black text-slate-700">Page range<input value={exportRange} onChange={(event) => setExportRange(event.target.value)} disabled={exportMode !== "range"} placeholder="1-3,5" className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold outline-none disabled:bg-slate-100 disabled:text-slate-400" /></label>
-                <button type="button" onClick={exportPdf} className="inline-flex min-h-12 items-center justify-center gap-2 rounded-2xl bg-indigo-700 px-5 py-3 text-sm font-black text-white shadow-lg shadow-indigo-100 transition hover:bg-indigo-800"><Download size={18} /> Download Edited PDF</button>
+                <label className="text-sm font-semibold text-slate-600">Export mode<select value={exportMode} onChange={(event) => setExportMode(event.target.value as ExportMode)} className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium outline-none"><option value="full">Full edited PDF</option><option value="current">Current page only</option><option value="range">Page range</option></select></label>
+                <label className="text-sm font-semibold text-slate-600">Page range<input value={exportRange} onChange={(event) => setExportRange(event.target.value)} disabled={exportMode !== "range"} placeholder="e.g. 1-3, 5" className="mt-1.5 w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-medium outline-none disabled:bg-slate-50 disabled:text-slate-400" /></label>
+                <button type="button" onClick={exportPdf} className="inline-flex min-h-[46px] items-center justify-center gap-2 rounded-2xl bg-indigo-700 px-5 py-2.5 text-sm font-black text-white shadow-lg shadow-indigo-100 transition hover:bg-indigo-800"><Download size={16} /> Download PDF</button>
               </div>
             </div>
-
-            {showFreeLimitNote && <div className="mx-3 mb-5 rounded-3xl border border-amber-100 bg-amber-50 p-4 text-sm font-semibold leading-6 text-amber-900 sm:mx-5"><div className="flex items-start justify-between gap-3"><div><span className="font-black">PDFMantra note:</span> This editor uses browser-based visual editing. Exact same-font PDF text rewriting, scanned OCR, password tools, and high-quality compression will need backend processing later.</div><button type="button" onClick={() => setShowFreeLimitNote(false)} className="rounded-xl bg-amber-100 px-3 py-1 text-xs font-black text-amber-900">Hide</button></div></div>}
           </div>
         </section>
       </main>

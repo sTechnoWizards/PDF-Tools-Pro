@@ -1,5 +1,6 @@
 "use client";
 
+import { Lock } from "lucide-react";
 import type { ReactNode } from "react";
 
 type EditorIconButtonTone =
@@ -16,6 +17,7 @@ type EditorIconButtonProps = {
   description?: string;
   active?: boolean;
   disabled?: boolean;
+  locked?: boolean;
   tone?: EditorIconButtonTone;
   onClick: () => void;
   children: ReactNode;
@@ -63,6 +65,7 @@ export function EditorIconButton({
   description,
   active = false,
   disabled = false,
+  locked = false,
   tone = "default",
   onClick,
   children,
@@ -78,17 +81,27 @@ export function EditorIconButton({
         title={description || label}
         disabled={disabled}
         onClick={onClick}
-        className={`inline-flex h-11 w-11 items-center justify-center rounded-2xl border text-sm font-black shadow-sm transition hover:-translate-y-0.5 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:shadow-sm ${visualClass}`}
+        className={`inline-flex h-11 w-11 items-center justify-center rounded-2xl border text-sm font-black shadow-sm transition hover:-translate-y-0.5 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:shadow-sm ${visualClass} ${locked ? "opacity-70" : ""}`}
       >
         {children}
       </button>
 
+      {locked && (
+        <span className="pointer-events-none absolute -right-1 -top-1 z-10 flex h-[18px] w-[18px] items-center justify-center rounded-full bg-amber-400 text-slate-900 shadow ring-2 ring-white" title="Pro feature">
+          <Lock size={9} strokeWidth={3} />
+        </span>
+      )}
+
       <div className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 hidden w-max max-w-[220px] -translate-x-1/2 rounded-xl bg-slate-950 px-3 py-2 text-center text-xs font-bold leading-4 text-white shadow-xl group-hover:block">
-        <div>{label}</div>
-        {description ? (
-          <div className="mt-1 text-[11px] font-semibold text-slate-300">
-            {description}
-          </div>
+        <div className="flex items-center justify-center gap-1">
+          {locked && <Lock size={10} className="text-amber-400" />}
+          {label}
+          {locked && <span className="ml-1 rounded-md bg-amber-400 px-1.5 py-0.5 text-[10px] font-black text-slate-950">PRO</span>}
+        </div>
+        {locked ? (
+          <div className="mt-1 text-[11px] font-semibold text-amber-300">Upgrade to Pro to unlock</div>
+        ) : description ? (
+          <div className="mt-1 text-[11px] font-semibold text-slate-300">{description}</div>
         ) : null}
       </div>
     </div>

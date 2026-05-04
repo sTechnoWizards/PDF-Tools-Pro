@@ -39,6 +39,7 @@ export type PdfLayer = {
   imageBytes?: Uint8Array;
   imageKind?: "png" | "jpg";
   coverText?: boolean;
+  textColor?: string;
 };
 
 export type PageThumb = {

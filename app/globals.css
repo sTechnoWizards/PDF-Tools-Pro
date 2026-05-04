@@ -17,6 +17,19 @@
   box-sizing: border-box;
 }
 
+/* Selection styling for PDF text-overlay spans when in select/highlight mode */
+.pdf-text-overlay-span::selection {
+  background: rgba(59, 130, 246, 0.3); /* Blue highlight for selection */
+  color: rgba(0, 0, 0, 0.8); /* Show black text when selected so user can see what they selected */
+  -webkit-text-fill-color: rgba(0, 0, 0, 0.8);
+}
+
+.pdf-text-overlay-span *::selection {
+  background: rgba(59, 130, 246, 0.3);
+  color: rgba(0, 0, 0, 0.8);
+  -webkit-text-fill-color: rgba(0, 0, 0, 0.8);
+}
+
 html {
   scroll-behavior: smooth;
   text-rendering: optimizeLegibility;
