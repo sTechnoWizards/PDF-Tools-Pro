@@ -60,9 +60,7 @@ A powerful, browser-side PDF editing tool built with Next.js 15, TypeScript, and
 
 **Production**: [https://smart-pdf-tools-pro-five.vercel.app](https://smart-pdf-tools-pro-five.vercel.app)
 
-### Test Accounts
-- **Pro User**: shubham10a50@gmail.com (tier: pro)
-- **Free User**: testfree@gmail.com / free@123 (tier: free)
+
 
 ## 📦 Installation
 
